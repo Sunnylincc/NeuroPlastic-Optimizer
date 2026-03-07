@@ -1,0 +1,28 @@
+experiment:
+  dataset: mnist
+  run_name: neuroplastic
+  batch_size: 128
+  epochs: 3
+  lr: 0.001
+  weight_decay: 0.0
+  optimizer: neuroplastic
+  seed: 42
+  num_workers: 2
+  output_dir: results
+  checkpoint_dir: checkpoints
+  device: cpu
+
+plasticity:
+  mode: rule_based
+  activity_weight: 0.4
+  gradient_weight: 0.4
+  memory_weight: 0.2
+  min_alpha: 0.2
+  max_alpha: 2.0
+  layerwise: true
+  parameterwise: true
+
+homeostatic:
+  max_update_norm: 1.0
+  target_rms: 0.02
+  adaptation_rate: 0.01

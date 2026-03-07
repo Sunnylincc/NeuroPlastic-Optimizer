@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neuroplastic-optimizer"
+version = "0.1.0"
+description = "Synaptic-plasticity-inspired optimization framework for PyTorch"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "All Rights Reserved" }
+authors = [{ name = "NeuroPlastic Optimizer Contributors" }]
+keywords = ["deep-learning", "optimizer", "pytorch", "plasticity", "research"]
+dependencies = [
+  "torch>=2.1",
+  "torchvision>=0.16",
+  "typer>=0.12",
+  "pyyaml>=6.0",
+  "numpy>=1.24",
+  "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "ruff>=0.6",
+  "mypy>=1.10",
+]
+
+[project.scripts]
+neuroplastic-benchmark = "neuroplastic_optimizer.training.runner:cli"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = false
