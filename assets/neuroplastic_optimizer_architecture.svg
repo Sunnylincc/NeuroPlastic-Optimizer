@@ -1,0 +1,70 @@
+<svg width="1200" height="700" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .title { font: bold 28px Arial; fill: #1f2937; }
+      .subtitle { font: 16px Arial; fill: #334155; }
+      .box { fill: #eef2ff; stroke: #4f46e5; stroke-width: 2; rx: 10; }
+      .bio { fill: #ecfeff; stroke: #0891b2; stroke-width: 2; rx: 10; }
+      .engine { fill: #f0fdf4; stroke: #15803d; stroke-width: 2; rx: 10; }
+      .text { font: 15px Arial; fill: #0f172a; }
+      .arrow { stroke: #475569; stroke-width: 2.5; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <text x="360" y="45" class="title">NeuroPlastic Optimizer architecture</text>
+
+  <rect x="40" y="90" width="220" height="80" class="box"/>
+  <text x="105" y="135" class="text">Input Batch</text>
+
+  <rect x="320" y="90" width="220" height="80" class="box"/>
+  <text x="366" y="135" class="text">Backbone Network</text>
+
+  <rect x="600" y="90" width="220" height="80" class="box"/>
+  <text x="668" y="135" class="text">Predictions</text>
+
+  <rect x="880" y="90" width="220" height="80" class="box"/>
+  <text x="952" y="135" class="text">Task Loss</text>
+
+  <line x1="260" y1="130" x2="320" y2="130" class="arrow"/>
+  <line x1="540" y1="130" x2="600" y2="130" class="arrow"/>
+  <line x1="820" y1="130" x2="880" y2="130" class="arrow"/>
+
+  <text x="55" y="250" class="subtitle">Biological Signal Abstraction</text>
+
+  <rect x="60" y="270" width="280" height="80" class="bio"/>
+  <text x="120" y="315" class="text">Neural Activity Traces</text>
+
+  <rect x="380" y="270" width="280" height="80" class="bio"/>
+  <text x="438" y="315" class="text">Gradient/Error Signal</text>
+
+  <rect x="700" y="270" width="280" height="80" class="bio"/>
+  <text x="758" y="315" class="text">Parameter-state Memory</text>
+
+  <text x="55" y="430" class="subtitle">NeuroPlastic Optimization Engine</text>
+
+  <rect x="60" y="450" width="250" height="90" class="engine"/>
+  <text x="116" y="500" class="text">Plasticity Encoder</text>
+
+  <rect x="350" y="450" width="250" height="90" class="engine"/>
+  <text x="398" y="500" class="text">Plasticity Controller</text>
+
+  <rect x="640" y="450" width="250" height="90" class="engine"/>
+  <text x="683" y="500" class="text">Homeostatic Stabilizer</text>
+
+  <rect x="930" y="450" width="240" height="90" class="engine"/>
+  <text x="954" y="500" class="text">Plasticity-modulated Update</text>
+
+  <line x1="200" y1="350" x2="180" y2="450" class="arrow"/>
+  <line x1="520" y1="350" x2="470" y2="450" class="arrow"/>
+  <line x1="840" y1="350" x2="760" y2="450" class="arrow"/>
+
+  <line x1="310" y1="495" x2="350" y2="495" class="arrow"/>
+  <line x1="600" y1="495" x2="640" y2="495" class="arrow"/>
+  <line x1="890" y1="495" x2="930" y2="495" class="arrow"/>
+
+  <path d="M 1060 450 C 1100 380, 1130 250, 430 170" fill="none" class="arrow"/>
+  <text x="930" y="390" class="subtitle">Feedback to Backbone Parameters</text>
+</svg>

@@ -1,0 +1,19 @@
+experiment:
+  dataset: synthetic_mnist
+  run_name: smoke
+  batch_size: 64
+  epochs: 1
+  lr: 0.001
+  weight_decay: 0.0
+  optimizer: neuroplastic
+  seed: 1
+  num_workers: 0
+  output_dir: results
+  checkpoint_dir: checkpoints
+  device: cpu
+
+plasticity:
+  mode: ablation_grad_only
+
+homeostatic:
+  max_update_norm: 1.0
