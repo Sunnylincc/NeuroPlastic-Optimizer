@@ -1,0 +1,27 @@
+experiment:
+  dataset: cifar10
+  batch_size: 128
+  epochs: 10
+  lr: 0.001
+  weight_decay: 0.0005
+  optimizer: neuroplastic
+  seed: 7
+  num_workers: 2
+  output_dir: results
+  checkpoint_dir: checkpoints
+  device: cpu
+
+plasticity:
+  mode: rule_based
+  activity_weight: 0.45
+  gradient_weight: 0.35
+  memory_weight: 0.2
+  min_alpha: 0.2
+  max_alpha: 1.8
+  layerwise: true
+  parameterwise: true
+
+homeostatic:
+  max_update_norm: 1.5
+  target_rms: 0.015
+  adaptation_rate: 0.01

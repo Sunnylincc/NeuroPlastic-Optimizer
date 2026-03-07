@@ -1,0 +1,24 @@
+experiment:
+  dataset: mnist
+  batch_size: 128
+  epochs: 3
+  lr: 0.001
+  weight_decay: 0.0
+  optimizer: neuroplastic
+  seed: 42
+  num_workers: 2
+  output_dir: results
+  checkpoint_dir: checkpoints
+  device: cpu
+
+plasticity:
+  mode: ablation_grad_only
+  min_alpha: 0.5
+  max_alpha: 1.5
+  layerwise: true
+  parameterwise: true
+
+homeostatic:
+  max_update_norm: 1.0
+  target_rms: 0.02
+  adaptation_rate: 0.01

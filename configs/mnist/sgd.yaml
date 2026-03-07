@@ -1,0 +1,12 @@
+experiment:
+  dataset: mnist
+  batch_size: 128
+  epochs: 3
+  lr: 0.01
+  weight_decay: 0.0
+  optimizer: sgd
+  seed: 42
+  num_workers: 2
+  output_dir: results
+  checkpoint_dir: checkpoints
+  device: cpu
