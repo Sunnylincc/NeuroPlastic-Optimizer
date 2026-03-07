@@ -9,6 +9,7 @@ __pycache__/
 htmlcov/
 artifacts/
 checkpoints/
+data/
 results/*.json
 results/*.png
 .DS_Store

@@ -12,7 +12,7 @@ def test_smoke_train_config(tmp_path):
     cfg_path.write_text(
         """
 experiment:
-  dataset: mnist
+  dataset: synthetic_mnist
   batch_size: 64
   epochs: 1
   lr: 0.001
@@ -23,6 +23,7 @@ experiment:
   output_dir: results
   checkpoint_dir: checkpoints
   device: cpu
+  run_name: smoke
 
 plasticity:
   mode: ablation_grad_only
@@ -38,7 +39,7 @@ homeostatic:
         check=True,
     )
 
-    summary_path = Path("results") / f"{cfg_path.stem}_summary.json"
+    summary_path = Path("results") / "smoke_synthetic_mnist_neuroplastic_summary.json"
     assert summary_path.exists()
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    assert "best_test_acc" in summary
+    assert "best_test_accuracy" in summary

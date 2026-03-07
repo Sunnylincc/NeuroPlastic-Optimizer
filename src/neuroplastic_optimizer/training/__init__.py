@@ -1,1 +1,1 @@
-"""Training utilities and experiment runner."""
+"""Training utilities."""

@@ -1,39 +1,46 @@
 # Benchmarks and experimental plan
 
-## Included baselines
+## Included optimizers
 
+- NeuroPlastic (`rule_based`)
+- NeuroPlastic (`ablation_grad_only`)
 - SGD
 - Adam
-- AdamW (+ optional exponential scheduler)
-- NeuroPlastic Optimizer (rule-based)
-- NeuroPlastic ablation (grad-only)
+- AdamW (optional scheduler)
 
-## Current benchmark tasks
+## Implemented benchmark tasks
 
-1. MNIST / FashionMNIST sanity checks
-2. CIFAR-10 compact CNN benchmark
-3. Text benchmark placeholder for subsequent release
+1. MNIST and FashionMNIST sanity checks.
+2. CIFAR-10 compact CNN benchmark.
+3. Synthetic MNIST smoke dataset for CI-like quick checks.
+4. Text benchmark scaffolding reserved for the next release.
 
-## Reproducibility standards
+## Reproducibility protocol
 
-- config-driven runs from YAML,
-- fixed seeds,
-- metric JSON artifacts,
-- checkpoint outputs,
-- post-hoc plotting script.
+- YAML config driven execution (`configs/`).
+- Fixed random seed for Python, NumPy, and torch backends.
+- Run-specific metrics and summary JSON artifacts.
+- Model checkpoint persistence.
+
+Artifact naming convention:
+
+- `results/<run>_<dataset>_<optimizer>_metrics.json`
+- `results/<run>_<dataset>_<optimizer>_summary.json`
+- `checkpoints/<run>_<dataset>_<optimizer>_model.pt`
 
 ## Suggested ablation matrix
 
 - remove activity traces,
 - remove parameter memory,
-- disable homeostatic stabilizer,
-- switch to grad-only mode,
-- layerwise vs parameterwise modulation toggles.
+- disable homeostatic stabilization,
+- switch to `ablation_grad_only`,
+- toggle layerwise versus parameterwise modulation.
 
-## Sample result schema
+## Experimental claims this layout supports
 
-Results are saved as JSON with:
+With sufficient runs and hardware, this framework is structured to measure:
 
-- per-epoch train/test loss and accuracy,
-- serialized experiment config,
-- summary JSON including best test accuracy and final test loss.
+- convergence speed and final accuracy,
+- stability under bounded updates,
+- adaptation sensitivity to plasticity signals,
+- contribution of each component via ablations.

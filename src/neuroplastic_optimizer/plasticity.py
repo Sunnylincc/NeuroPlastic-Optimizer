@@ -11,7 +11,7 @@ class PlasticityMode(str, Enum):
     ABLATION_GRAD_ONLY = "ablation_grad_only"
 
 
-@dataclass
+@dataclass(slots=True)
 class PlasticityConfig:
     mode: PlasticityMode = PlasticityMode.RULE_BASED
     activity_weight: float = 0.4
@@ -28,6 +28,10 @@ def _standardize(x: torch.Tensor, eps: float) -> torch.Tensor:
     return x / (x.mean() + eps)
 
 
+def _expand_scalar_like(value: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+    return torch.full_like(ref, fill_value=float(value.item()))
+
+
 def compute_plasticity(
     grad: torch.Tensor,
     activity_trace: torch.Tensor,
@@ -36,22 +40,32 @@ def compute_plasticity(
     config: PlasticityConfig,
 ) -> torch.Tensor:
     grad_signal = _standardize(grad.abs(), config.eps)
+
     if config.mode is PlasticityMode.ABLATION_GRAD_ONLY:
-        alpha = grad_signal
+        if config.layerwise or not config.parameterwise:
+            alpha = _expand_scalar_like(grad_signal.mean(), grad_signal)
+        else:
+            alpha = grad_signal
+        return alpha.clamp(config.min_alpha, config.max_alpha)
+
+    activity_signal = _standardize(activity_trace, config.eps)
+    memory_signal = _standardize(momentum.abs() / (variance.sqrt() + config.eps), config.eps)
+
+    if config.layerwise:
+        fused_scalar = (
+            config.activity_weight * activity_signal.mean()
+            + config.gradient_weight * grad_signal.mean()
+            + config.memory_weight * memory_signal.mean()
+        )
+        alpha = _expand_scalar_like(fused_scalar, grad_signal)
     else:
-        activity_signal = _standardize(activity_trace, config.eps)
-        memory_signal = _standardize(momentum.abs() / (variance.sqrt() + config.eps), config.eps)
         alpha = (
             config.activity_weight * activity_signal
             + config.gradient_weight * grad_signal
             + config.memory_weight * memory_signal
         )
 
-    if config.layerwise:
-        layer_scalar = alpha.mean()
-        alpha = alpha / (alpha.mean() + config.eps) * layer_scalar
-
     if not config.parameterwise:
-        alpha = torch.full_like(alpha, fill_value=float(alpha.mean()))
+        alpha = _expand_scalar_like(alpha.mean(), alpha)
 
     return alpha.clamp(config.min_alpha, config.max_alpha)

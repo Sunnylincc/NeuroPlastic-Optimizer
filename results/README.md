@@ -1,9 +1,18 @@
 # Results artifacts
 
-This directory stores experiment outputs:
+Each benchmark run writes structured artifacts:
 
 - `*_metrics.json`: per-epoch train/test metrics
-- `*_summary.json`: compact benchmark summary
-- `*.png`: generated result figures
+- `*_summary.json`: condensed run summary
+- `*.png`: generated benchmark plots
 
-Run `python scripts/benchmark_all.py` to populate benchmark outputs.
+Naming convention:
+
+- `<run_name>_<dataset>_<optimizer>_metrics.json`
+- `<run_name>_<dataset>_<optimizer>_summary.json`
+
+Populate these artifacts via:
+
+```bash
+python scripts/benchmark_all.py
+```

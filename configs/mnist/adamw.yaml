@@ -1,5 +1,6 @@
 experiment:
   dataset: mnist
+  run_name: adamw
   batch_size: 128
   epochs: 3
   lr: 0.001

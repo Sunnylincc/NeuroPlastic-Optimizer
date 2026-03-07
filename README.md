@@ -1,36 +1,38 @@
 # NeuroPlastic Optimizer
 
-NeuroPlastic Optimizer is a PyTorch-first optimization framework that augments gradient descent with synaptic-plasticity-inspired adaptive modulation. It integrates local activity traces, gradient signals, and parameter-state memory to compute bounded per-parameter (or layer-wise) plasticity coefficients under homeostatic stabilization.
+NeuroPlastic Optimizer is a research-engineering framework for synaptic-plasticity-inspired optimization in PyTorch. It augments gradient-based updates with adaptive plasticity coefficients computed from local activity traces, gradient statistics, and parameter-state memory, while enforcing homeostatic stabilization to keep updates bounded.
 
-## Why this project exists
+## Positioning
 
-Modern optimizers are powerful but often rely on limited local signals. This repository explores a practical middle ground between biologically inspired learning principles and production-minded deep learning systems:
+This repository targets an applied-research use case:
 
-- **biological inspiration**: local activity, memory, and homeostatic pressure,
-- **engineering implementation**: modular, ablation-ready components for controlled experimentation,
-- **research utility**: reproducible baselines and benchmark scripts for fair comparisons.
+- **Biological inspiration** is encoded as algorithmic signals (activity, memory, homeostatic control).
+- **Engineering discipline** is prioritized through modular components, reproducible configs, and baseline comparisons.
+- **Scientific utility** is supported by ablation-ready switches and consistent experiment artifacts.
+
+The project does **not** claim biological fidelity or neuroscience simulation.
 
 ## Method overview
 
-The optimizer follows:
+NeuroPlastic updates follow:
 
 \[
 \theta_{t+1} = \theta_t - \eta \cdot \alpha_t \odot g_t
 \]
 
-Where `alpha_t` is computed from:
+where `alpha_t` combines:
 
-1. activity traces (EMA of |gradient|),
-2. gradient magnitude statistics,
+1. local activity traces (EMA of `|g_t|`),
+2. gradient magnitude signal,
 3. parameter-state memory (momentum/variance history),
 4. bounded homeostatic stabilization.
 
-Supported plasticity modes:
+### Plasticity modes
 
-- `rule_based` (default): weighted fusion of activity + gradient + memory signals,
-- `ablation_grad_only`: reduced variant for controlled comparisons.
+- `rule_based` (default): weighted fusion of activity, gradient, and memory signals.
+- `ablation_grad_only`: gradient-driven ablation mode for controlled comparison.
 
-## Architecture figure
+## Architecture
 
 ![NeuroPlastic Optimizer architecture](assets/neuroplastic_optimizer_architecture.svg)
 
@@ -46,7 +48,7 @@ pip install -e .[dev]
 
 ## Quickstart
 
-### Minimal usage in code
+### API usage
 
 ```python
 from neuroplastic_optimizer import NeuroPlasticOptimizer
@@ -54,75 +56,76 @@ from neuroplastic_optimizer import NeuroPlasticOptimizer
 optimizer = NeuroPlasticOptimizer(model.parameters(), lr=1e-3)
 ```
 
-### Run MNIST experiment
+### Run a single experiment
 
 ```bash
 python -m neuroplastic_optimizer.training.runner --config configs/mnist/neuroplastic.yaml
 ```
 
-## Benchmark usage
+Or use convenience scripts:
 
-Run baseline comparisons (MNIST):
+```bash
+python scripts/train_mnist.py
+python scripts/train_cifar10.py
+```
+
+## Benchmarks
+
+Run the MNIST benchmark sweep (NeuroPlastic + ablation + SGD/Adam/AdamW):
 
 ```bash
 python scripts/benchmark_all.py
 ```
 
-Plot results:
+Plot test accuracy curves:
 
 ```bash
 python scripts/plot_results.py --result-files \
-  results/neuroplastic_metrics.json \
-  results/adamw_metrics.json \
-  results/sgd_metrics.json
+  results/neuroplastic_mnist_neuroplastic_metrics.json \
+  results/ablation_grad_only_mnist_neuroplastic_metrics.json \
+  results/adamw_mnist_adamw_metrics.json \
+  results/adam_mnist_adam_metrics.json \
+  results/sgd_mnist_sgd_metrics.json
 ```
+
+## Reproducibility and artifacts
+
+Every run writes:
+
+- `results/<run>_<dataset>_<optimizer>_metrics.json`
+- `results/<run>_<dataset>_<optimizer>_summary.json`
+- `checkpoints/<run>_<dataset>_<optimizer>_model.pt`
 
 ## Repository layout
 
 ```text
 src/neuroplastic_optimizer/
-  optimizer.py          # optimizer update loop
+  optimizer.py          # NeuroPlastic optimizer update rule
   plasticity.py         # plasticity coefficient computation
-  traces.py             # local activity trace extraction
-  state.py              # parameter memory state
+  traces.py             # activity trace extraction
+  state.py              # parameter-state memory
   stabilization.py      # homeostatic constraints
-  training/             # experiment runner, config mapping, data loading
+  training/             # experiment runner, config parsing, data
   models/               # benchmark models
 configs/                # YAML experiment definitions
-scripts/                # benchmark and plotting scripts
-docs/                   # architecture, method, benchmark plans
-tests/                  # unit + smoke tests
+scripts/                # benchmark orchestration and plotting
+docs/                   # method, architecture, benchmark plan
+tests/                  # unit and integration tests
 assets/                 # figures
 ```
 
-## Design principles
-
-- modular boundaries around biological abstractions,
-- reproducible and config-driven experiments,
-- explicit ablation support,
-- stable defaults with bounded update dynamics,
-- minimal dependency footprint.
-
 ## Current limitations
 
-- v0.1 focuses on small-to-mid scale supervised benchmarks,
-- distributed training is not yet implemented,
-- text benchmark configs are scaffolded but not fully shipped,
-- no claim of biological realism beyond algorithmic inspiration.
-
-## Results
-
-`results/` stores JSON metrics and summary files.
-
-Current release includes benchmark pipelines and plotting utilities; full benchmark tables can be populated by running the provided scripts on your hardware.
+- Current benchmarks are lightweight by design (MNIST/FashionMNIST/CIFAR-10).
+- Text benchmark integration is scaffolded but not finalized.
+- Distributed training and AMP orchestration are future work.
 
 ## Roadmap
 
-- [ ] Add lightweight text classification benchmark suite.
-- [ ] Add distributed/mixed-precision training support.
-- [ ] Add richer diagnostics (update norms, alpha distributions, adaptation dynamics).
-- [ ] Add optimizer-state checkpoint resume tests.
-- [ ] Publish reproducible benchmark table and ablation report.
+- [ ] Finalize compact text classification benchmark.
+- [ ] Add distributed and mixed-precision training support.
+- [ ] Add richer diagnostics (alpha distribution, update norm traces).
+- [ ] Publish reproducible benchmark tables with ablation summaries.
 
 ## Citation
 

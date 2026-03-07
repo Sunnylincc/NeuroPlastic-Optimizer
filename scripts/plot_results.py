@@ -17,7 +17,7 @@ def main() -> None:
     for file in args.result_files:
         with open(file, encoding="utf-8") as f:
             payload = json.load(f)
-        acc = [x["acc"] for x in payload["test"]]
+        acc = [x["accuracy"] for x in payload["test"]]
         plt.plot(acc, marker="o", label=Path(file).stem)
 
     plt.xlabel("Epoch")

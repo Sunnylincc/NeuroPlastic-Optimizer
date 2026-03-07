@@ -6,7 +6,7 @@ from neuroplastic_optimizer.plasticity import PlasticityConfig, PlasticityMode
 from neuroplastic_optimizer.stabilization import HomeostaticConfig
 
 
-@dataclass
+@dataclass(slots=True)
 class ExperimentConfig:
     dataset: str = "mnist"
     batch_size: int = 128
@@ -21,7 +21,17 @@ class ExperimentConfig:
     device: str = "cpu"
     scheduler: str | None = None
     scheduler_gamma: float = 0.95
+    run_name: str | None = None
 
+    def validate(self) -> None:
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be > 0")
+        if self.epochs <= 0:
+            raise ValueError("epochs must be > 0")
+        if self.lr <= 0:
+            raise ValueError("lr must be > 0")
+        if self.optimizer not in {"neuroplastic", "sgd", "adam", "adamw"}:
+            raise ValueError(f"unsupported optimizer: {self.optimizer}")
 
 
 def plasticity_config_from_dict(data: dict) -> PlasticityConfig:

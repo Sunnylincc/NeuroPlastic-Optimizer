@@ -29,7 +29,7 @@ dev = [
 ]
 
 [project.scripts]
-neuroplastic-benchmark = "neuroplastic_optimizer.training.runner:main"
+neuroplastic-benchmark = "neuroplastic_optimizer.training.runner:cli"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
