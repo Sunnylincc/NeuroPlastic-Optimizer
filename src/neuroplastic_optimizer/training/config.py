@@ -26,6 +26,9 @@ class ExperimentConfig:
     device: str = "cpu"
     scheduler: str | None = None
     scheduler_gamma: float = 0.95
+    mixed_precision: bool = False
+    amp_dtype: str = "fp16"
+    gradient_accumulation_steps: int = 1
     run_name: str | None = None
     resume_from: str | None = None
     save_every_n_epochs: int = 1
@@ -43,6 +46,8 @@ class ExperimentConfig:
             raise ValueError("lr must be > 0")
         if self.save_every_n_epochs <= 0:
             raise ValueError("save_every_n_epochs must be > 0")
+        if self.gradient_accumulation_steps <= 0:
+            raise ValueError("gradient_accumulation_steps must be > 0")
         if self.optimizer not in {"neuroplastic", "sgd", "adam", "adamw"}:
             raise ValueError(f"unsupported optimizer: {self.optimizer}")
         if self.num_workers < 0:
@@ -52,6 +57,8 @@ class ExperimentConfig:
         valid_levels = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
         if self.log_level.upper() not in valid_levels:
             raise ValueError(f"unsupported log_level: {self.log_level}")
+        if self.amp_dtype not in {"fp16", "bf16"}:
+            raise ValueError(f"unsupported amp_dtype: {self.amp_dtype}")
 
 
 def plasticity_config_from_dict(data: dict) -> PlasticityConfig:

@@ -6,6 +6,7 @@ import random
 import time
 from dataclasses import asdict
 from pathlib import Path
+from contextlib import nullcontext
 from typing import Any
 
 import numpy as np
@@ -157,6 +158,16 @@ def _make_optimizer(model: nn.Module, cfg: ExperimentConfig, raw: dict[str, Any]
     )
 
 
+def _resolve_amp_dtype(amp_dtype: str) -> torch.dtype:
+    mapping = {"fp16": torch.float16, "bf16": torch.bfloat16}
+    return mapping[amp_dtype]
+
+
+def init_distributed_if_needed(cfg: ExperimentConfig) -> dict[str, Any]:
+    # Placeholder for future DDP/FSDP setup.
+    return {"enabled": False, "world_size": 1, "rank": 0}
+
+
 def _run_epoch(
     model: nn.Module,
     loader,
@@ -164,24 +175,58 @@ def _run_epoch(
     optimizer: Optimizer,
     device: torch.device,
     train: bool,
-) -> Metrics:
+    *,
+    mixed_precision: bool = False,
+    amp_dtype: str = "fp16",
+    gradient_accumulation_steps: int = 1,
+    scaler: torch.cuda.amp.GradScaler | None = None,
+) -> tuple[Metrics, int]:
     model.train(train)
     total_loss = 0.0
     correct = 0
     total = 0
+    update_steps = 0
+    accumulation = max(1, gradient_accumulation_steps)
+    amp_enabled = mixed_precision and device.type in {"cuda", "cpu"}
+    total_batches = len(loader) if hasattr(loader, "__len__") else None
+
+    if train:
+        optimizer.zero_grad(set_to_none=True)
+
+    use_scaler = train and mixed_precision and scaler is not None and scaler.is_enabled()
+
     with torch.set_grad_enabled(train):
-        for batch_x, batch_y in loader:
+        for batch_idx, (batch_x, batch_y) in enumerate(loader, start=1):
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-            logits = model(batch_x)
-            loss = criterion(logits, batch_y)
+            autocast_context = (
+                torch.autocast(device_type=device.type, dtype=_resolve_amp_dtype(amp_dtype), enabled=amp_enabled)
+                if device.type in {"cuda", "cpu"}
+                else nullcontext()
+            )
+            with autocast_context:
+                logits = model(batch_x)
+                loss = criterion(logits, batch_y)
             if train:
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                optimizer.step()
+                step_loss = loss / accumulation
+                if use_scaler:
+                    scaler.scale(step_loss).backward()
+                else:
+                    step_loss.backward()
+                should_step = batch_idx % accumulation == 0
+                if total_batches is not None and batch_idx == total_batches:
+                    should_step = True
+                if should_step:
+                    if use_scaler:
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
+                    update_steps += 1
             total_loss += loss.item() * batch_x.size(0)
             correct += (logits.argmax(dim=1) == batch_y).sum().item()
             total += batch_x.size(0)
-    return Metrics(loss=total_loss / total, accuracy=correct / total)
+    return Metrics(loss=total_loss / total, accuracy=correct / total), update_steps
 
 
 def run_experiment(config_path: str) -> dict[str, Any]:
@@ -189,6 +234,7 @@ def run_experiment(config_path: str) -> dict[str, Any]:
     cfg = ExperimentConfig(**raw["experiment"])
     cfg.validate()
     device = _resolve_device(cfg.device)
+    distributed_state = init_distributed_if_needed(cfg)
     set_seed(cfg.seed)
 
     train_loader, test_loader = build_dataloaders(
@@ -209,8 +255,11 @@ def run_experiment(config_path: str) -> dict[str, Any]:
     if cfg.scheduler == "exponential":
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=cfg.scheduler_gamma)
 
+    scaler = torch.cuda.amp.GradScaler(enabled=cfg.mixed_precision and device.type == "cuda")
+
     start_epoch = 1
     best_metric = float("-inf")
+    global_update_step = 0
 
     if cfg.resume_from is not None:
         resume_path = Path(cfg.resume_from)
@@ -219,15 +268,19 @@ def run_experiment(config_path: str) -> dict[str, Any]:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if scheduler is not None and "scheduler_state_dict" in checkpoint:
             scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        if "scaler_state_dict" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler_state_dict"])
         _set_rng_state(checkpoint.get("rng_state", {}))
         start_epoch = int(checkpoint["epoch"]) + 1
         best_metric = float(checkpoint.get("best_metric", best_metric))
+        global_update_step = int(checkpoint.get("global_update_step", global_update_step))
 
     history: dict[str, Any] = {
         "train": [],
         "test": [],
         "config": asdict(cfg),
         "device": str(device),
+        "distributed": distributed_state,
     }
 
     out_dir = Path(cfg.output_dir)
@@ -245,12 +298,35 @@ def run_experiment(config_path: str) -> dict[str, Any]:
         try:
             for epoch in range(start_epoch, cfg.epochs + 1):
                 epoch_start = time.perf_counter()
-                train_metrics = _run_epoch(model, train_loader, criterion, optimizer, device, train=True)
-                test_metrics = _run_epoch(model, test_loader, criterion, optimizer, device, train=False)
+                train_metrics, update_steps = _run_epoch(
+                    model,
+                    train_loader,
+                    criterion,
+                    optimizer,
+                    device,
+                    train=True,
+                    mixed_precision=cfg.mixed_precision,
+                    amp_dtype=cfg.amp_dtype,
+                    gradient_accumulation_steps=cfg.gradient_accumulation_steps,
+                    scaler=scaler,
+                )
+                global_update_step += update_steps
+                test_metrics, _ = _run_epoch(
+                    model,
+                    test_loader,
+                    criterion,
+                    optimizer,
+                    device,
+                    train=False,
+                    mixed_precision=cfg.mixed_precision,
+                    amp_dtype=cfg.amp_dtype,
+                    gradient_accumulation_steps=cfg.gradient_accumulation_steps,
+                )
                 improved = test_metrics["accuracy"] > best_metric
                 best_metric = max(best_metric, test_metrics["accuracy"])
                 if scheduler is not None:
-                    scheduler.step()
+                    for _ in range(update_steps):
+                        scheduler.step()
                 lr = float(optimizer.param_groups[0]["lr"])
                 elapsed = time.perf_counter() - epoch_start
                 history["train"].append(train_metrics)
@@ -264,12 +340,16 @@ def run_experiment(config_path: str) -> dict[str, Any]:
                     "lr": lr,
                     "time_per_epoch": elapsed,
                     "device": str(device),
+                    "update_steps": update_steps,
+                    "global_update_step": global_update_step,
                 }
                 logger.info("epoch_metrics", extra={"event_payload": event})
                 _write_event(events_file, event)
                 events_file.flush()
 
                 checkpoint = _build_checkpoint(model, optimizer, scheduler, epoch, best_metric)
+                checkpoint["scaler_state_dict"] = scaler.state_dict()
+                checkpoint["global_update_step"] = global_update_step
                 should_save = epoch % cfg.save_every_n_epochs == 0
                 if cfg.save_best_only:
                     should_save = should_save and improved
@@ -287,6 +367,8 @@ def run_experiment(config_path: str) -> dict[str, Any]:
     if not checkpoint_path.exists():
         checkpoint_epoch = cfg.epochs if cfg.epochs >= start_epoch else start_epoch - 1
         checkpoint = _build_checkpoint(model, optimizer, scheduler, checkpoint_epoch, best_metric)
+        checkpoint["scaler_state_dict"] = scaler.state_dict()
+        checkpoint["global_update_step"] = global_update_step
         torch.save(checkpoint, checkpoint_path)
 
     last_test_loss = history["test"][-1]["loss"] if history["test"] else None
@@ -297,6 +379,7 @@ def run_experiment(config_path: str) -> dict[str, Any]:
         "optimizer": cfg.optimizer,
         "dataset": cfg.dataset,
         "checkpoint": str(checkpoint_path),
+        "global_update_step": global_update_step,
     }
     with open(out_dir / f"{stem}_summary.json", "w", encoding="utf-8") as file_obj:
         json.dump(summary, file_obj, indent=2)

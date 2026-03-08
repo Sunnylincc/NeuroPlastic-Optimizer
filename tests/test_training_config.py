@@ -36,3 +36,19 @@ def test_experiment_config_validation_rejects_unknown_log_level():
     cfg = ExperimentConfig(log_level="verbose")
     with pytest.raises(ValueError):
         cfg.validate()
+
+
+def test_experiment_config_validation_rejects_non_positive_gradient_accumulation_steps():
+    from neuroplastic_optimizer.training.config import ExperimentConfig
+
+    cfg = ExperimentConfig(gradient_accumulation_steps=0)
+    with pytest.raises(ValueError):
+        cfg.validate()
+
+
+def test_experiment_config_validation_rejects_unsupported_amp_dtype():
+    from neuroplastic_optimizer.training.config import ExperimentConfig
+
+    cfg = ExperimentConfig(amp_dtype="fp8")
+    with pytest.raises(ValueError):
+        cfg.validate()

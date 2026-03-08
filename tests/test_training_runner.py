@@ -40,13 +40,13 @@ def test_run_experiment_resume_from_checkpoint_continues_epoch_and_metric(tmp_pa
     def fake_build_dataloaders(dataset: str, batch_size: int, num_workers: int, **kwargs):
         return [object()], [object()]
 
-    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool):
+    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool, **kwargs):
         if train:
             optimizer.param_groups[0]["lr"] *= 0.99
-            return {"loss": 1.0, "accuracy": 0.2}
+            return {"loss": 1.0, "accuracy": 0.2}, 1
         epoch = len(epoch_log) + 1
         epoch_log.append(epoch)
-        return {"loss": 1.0 / epoch, "accuracy": 0.5 + 0.1 * epoch}
+        return {"loss": 1.0 / epoch, "accuracy": 0.5 + 0.1 * epoch}, 0
 
     monkeypatch.setattr(
         "neuroplastic_optimizer.training.runner.build_dataloaders",
@@ -110,10 +110,10 @@ def test_run_experiment_writes_jsonl_events_with_required_fields(tmp_path, monke
     def fake_build_dataloaders(dataset: str, batch_size: int, num_workers: int, **kwargs):
         return [object()], [object()]
 
-    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool):
+    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool, **kwargs):
         if train:
-            return {"loss": 0.8, "accuracy": 0.7}
-        return {"loss": 0.6, "accuracy": 0.75}
+            return {"loss": 0.8, "accuracy": 0.7}, 1
+        return {"loss": 0.6, "accuracy": 0.75}, 0
 
     monkeypatch.setattr(
         "neuroplastic_optimizer.training.runner.build_dataloaders",
@@ -169,13 +169,13 @@ def test_run_experiment_flushes_metrics_on_exception(tmp_path, monkeypatch):
     def fake_build_dataloaders(dataset: str, batch_size: int, num_workers: int, **kwargs):
         return [object()], [object()]
 
-    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool):
+    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool, **kwargs):
         if train:
-            return {"loss": 0.9, "accuracy": 0.1}
+            return {"loss": 0.9, "accuracy": 0.1}, 1
         calls["count"] += 1
         if calls["count"] == 2:
             raise RuntimeError("boom")
-        return {"loss": 0.8, "accuracy": 0.2}
+        return {"loss": 0.8, "accuracy": 0.2}, 0
 
     monkeypatch.setattr(
         "neuroplastic_optimizer.training.runner.build_dataloaders",
@@ -210,3 +210,66 @@ def test_run_experiment_flushes_metrics_on_exception(tmp_path, monkeypatch):
     assert metrics_path.exists()
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     assert len(metrics["test"]) == 1
+
+
+def test_run_epoch_gradient_accumulation_counts_update_steps():
+    from neuroplastic_optimizer.training.runner import _run_epoch
+
+    model = torch.nn.Linear(4, 2)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    criterion = torch.nn.CrossEntropyLoss()
+
+    batches = [
+        (torch.randn(2, 4), torch.tensor([0, 1])),
+        (torch.randn(2, 4), torch.tensor([1, 0])),
+        (torch.randn(2, 4), torch.tensor([0, 1])),
+        (torch.randn(2, 4), torch.tensor([1, 0])),
+        (torch.randn(2, 4), torch.tensor([0, 1])),
+    ]
+
+    metrics, update_steps = _run_epoch(
+        model,
+        batches,
+        criterion,
+        optimizer,
+        torch.device("cpu"),
+        train=True,
+        mixed_precision=False,
+        gradient_accumulation_steps=2,
+        scaler=None,
+    )
+
+    assert metrics["loss"] > 0
+    assert 0 <= metrics["accuracy"] <= 1
+    assert update_steps == 3
+
+
+def test_run_epoch_mixed_precision_disabled_does_not_use_scaler():
+    from neuroplastic_optimizer.training.runner import _run_epoch
+
+    class FailingScaler:
+        def is_enabled(self):
+            return True
+
+        def scale(self, _):
+            raise AssertionError("scale should not be called when mixed_precision=False")
+
+    model = torch.nn.Linear(4, 2)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    criterion = torch.nn.CrossEntropyLoss()
+    loader = [(torch.randn(2, 4), torch.tensor([0, 1]))]
+
+    metrics, update_steps = _run_epoch(
+        model,
+        loader,
+        criterion,
+        optimizer,
+        torch.device("cpu"),
+        train=True,
+        mixed_precision=False,
+        gradient_accumulation_steps=1,
+        scaler=FailingScaler(),
+    )
+
+    assert metrics["loss"] > 0
+    assert update_steps == 1
