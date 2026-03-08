@@ -18,10 +18,11 @@ from torch.optim import Optimizer
 from neuroplastic_optimizer.models.cnn import SmallCIFARNet
 from neuroplastic_optimizer.models.mlp import MLPClassifier
 from neuroplastic_optimizer.optimizer import NeuroPlasticOptimizer
+from neuroplastic_optimizer.plasticity import PlasticityConfig
+from neuroplastic_optimizer.stabilization import HomeostaticConfig
 from neuroplastic_optimizer.training.config import (
     ExperimentConfig,
-    homeostatic_config_from_dict,
-    plasticity_config_from_dict,
+    parse_and_validate_training_config,
 )
 from neuroplastic_optimizer.training.data import build_dataloaders
 from neuroplastic_optimizer.utils.io import dump_json, load_yaml
@@ -135,7 +136,13 @@ def _make_model(dataset: str) -> nn.Module:
     raise ValueError(f"unsupported dataset: {dataset}")
 
 
-def _make_optimizer(model: nn.Module, cfg: ExperimentConfig, raw: dict[str, Any]) -> Optimizer:
+def _make_optimizer(
+    model: nn.Module,
+    cfg: ExperimentConfig,
+    *,
+    plasticity_cfg: PlasticityConfig,
+    homeostatic_cfg: HomeostaticConfig,
+) -> Optimizer:
     if cfg.optimizer == "sgd":
         return torch.optim.SGD(
             model.parameters(),
@@ -147,14 +154,12 @@ def _make_optimizer(model: nn.Module, cfg: ExperimentConfig, raw: dict[str, Any]
         return torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     if cfg.optimizer == "adamw":
         return torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    p_cfg = plasticity_config_from_dict(raw.get("plasticity", {}))
-    h_cfg = homeostatic_config_from_dict(raw.get("homeostatic", {}))
     return NeuroPlasticOptimizer(
         model.parameters(),
         lr=cfg.lr,
         weight_decay=cfg.weight_decay,
-        plasticity_config=p_cfg,
-        homeostatic_config=h_cfg,
+        plasticity_config=plasticity_cfg,
+        homeostatic_config=homeostatic_cfg,
     )
 
 
@@ -231,8 +236,8 @@ def _run_epoch(
 
 def run_experiment(config_path: str) -> dict[str, Any]:
     raw = load_yaml(config_path)
-    cfg = ExperimentConfig(**raw["experiment"])
-    cfg.validate()
+    parsed = parse_and_validate_training_config(raw)
+    cfg = parsed.experiment
     device = _resolve_device(cfg.device)
     distributed_state = init_distributed_if_needed(cfg)
     set_seed(cfg.seed)
@@ -249,7 +254,12 @@ def run_experiment(config_path: str) -> dict[str, Any]:
     )
     model = _make_model(cfg.dataset).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = _make_optimizer(model, cfg, raw)
+    optimizer = _make_optimizer(
+        model,
+        cfg,
+        plasticity_cfg=parsed.plasticity,
+        homeostatic_cfg=parsed.homeostatic,
+    )
 
     scheduler = None
     if cfg.scheduler == "exponential":

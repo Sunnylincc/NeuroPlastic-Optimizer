@@ -273,3 +273,26 @@ def test_run_epoch_mixed_precision_disabled_does_not_use_scaler():
 
     assert metrics["loss"] > 0
     assert update_steps == 1
+
+
+def test_run_experiment_validates_before_model_construction(tmp_path, monkeypatch):
+    from neuroplastic_optimizer.training.runner import run_experiment
+
+    config_path = tmp_path / "invalid.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"experiment": {"dataset": "synthetic_mnist", "device": "cuda:"}}),
+        encoding="utf-8",
+    )
+
+    called = {"model": False}
+
+    def fail_if_called(*args, **kwargs):
+        called["model"] = True
+        raise AssertionError("model construction should not happen for invalid config")
+
+    monkeypatch.setattr("neuroplastic_optimizer.training.runner._make_model", fail_if_called)
+
+    with pytest.raises(ValueError, match="device"):
+        run_experiment(str(config_path))
+
+    assert called["model"] is False
