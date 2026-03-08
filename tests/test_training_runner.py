@@ -40,7 +40,7 @@ def test_run_experiment_resume_from_checkpoint_continues_epoch_and_metric(tmp_pa
     def fake_build_dataloaders(dataset: str, batch_size: int, num_workers: int):
         return [object()], [object()]
 
-    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool):
+    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool, **kwargs):
         if train:
             optimizer.param_groups[0]["lr"] *= 0.99
             return {"loss": 1.0, "accuracy": 0.2}
@@ -103,110 +103,50 @@ def test_run_experiment_resume_from_checkpoint_continues_epoch_and_metric(tmp_pa
     assert second_summary["best_test_accuracy"] == pytest.approx(0.9)
 
 
+def test_run_epoch_non_finite_loss_writes_failure_snapshot(tmp_path):
+    import torch
 
-def test_run_experiment_writes_jsonl_events_with_required_fields(tmp_path, monkeypatch):
-    from neuroplastic_optimizer.training.runner import run_experiment
+    from neuroplastic_optimizer.training.config import ExperimentConfig
+    from neuroplastic_optimizer.training.runner import NonFiniteLossError, _run_epoch
 
-    def fake_build_dataloaders(dataset: str, batch_size: int, num_workers: int):
-        return [object()], [object()]
+    class TinyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(4, 2)
 
-    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool):
-        if train:
-            return {"loss": 0.8, "accuracy": 0.7}
-        return {"loss": 0.6, "accuracy": 0.75}
+        def forward(self, x):
+            return self.linear(x)
 
-    monkeypatch.setattr(
-        "neuroplastic_optimizer.training.runner.build_dataloaders",
-        fake_build_dataloaders,
+    class NaNLoss(torch.nn.Module):
+        def forward(self, logits, target):
+            return logits.sum() * torch.tensor(float("nan"), device=logits.device)
+
+    model = TinyModel()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    loader = [(torch.randn(3, 4), torch.zeros(3, dtype=torch.long))]
+    cfg = ExperimentConfig(
+        dataset="synthetic_mnist",
+        optimizer="sgd",
+        fail_on_non_finite=True,
+        output_dir=str(tmp_path),
     )
-    monkeypatch.setattr("neuroplastic_optimizer.training.runner._run_epoch", fake_run_epoch)
+    snapshot_path = tmp_path / "failure_snapshot.json"
 
-    experiment = {
-        "dataset": "synthetic_mnist",
-        "batch_size": 2,
-        "epochs": 2,
-        "lr": 0.001,
-        "weight_decay": 0.0,
-        "optimizer": "adam",
-        "seed": 123,
-        "num_workers": 0,
-        "output_dir": str(tmp_path / "results"),
-        "checkpoint_dir": str(tmp_path / "checkpoints"),
-        "device": "cpu",
-        "run_name": "event_case",
-        "save_every_n_epochs": 1,
-        "save_best_only": False,
-        "log_json": True,
-    }
+    with pytest.raises(NonFiniteLossError):
+        _run_epoch(
+            model,
+            loader,
+            NaNLoss(),
+            optimizer,
+            torch.device("cpu"),
+            train=True,
+            cfg=cfg,
+            failure_snapshot_path=snapshot_path,
+        )
 
-    config_path = tmp_path / "event.yaml"
-    config_path.write_text(yaml.safe_dump({"experiment": experiment}), encoding="utf-8")
-
-    run_experiment(str(config_path))
-
-    events_path = tmp_path / "results" / "event_case_synthetic_mnist_adam_events.jsonl"
-    assert events_path.exists()
-    lines = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(lines) == 2
-    required = {
-        "epoch",
-        "train_loss",
-        "train_acc",
-        "test_loss",
-        "test_acc",
-        "lr",
-        "time_per_epoch",
-        "device",
-    }
-    assert required.issubset(lines[0].keys())
-
-
-def test_run_experiment_flushes_metrics_on_exception(tmp_path, monkeypatch):
-    from neuroplastic_optimizer.training.runner import run_experiment
-
-    calls = {"count": 0}
-
-    def fake_build_dataloaders(dataset: str, batch_size: int, num_workers: int):
-        return [object()], [object()]
-
-    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool):
-        if train:
-            return {"loss": 0.9, "accuracy": 0.1}
-        calls["count"] += 1
-        if calls["count"] == 2:
-            raise RuntimeError("boom")
-        return {"loss": 0.8, "accuracy": 0.2}
-
-    monkeypatch.setattr(
-        "neuroplastic_optimizer.training.runner.build_dataloaders",
-        fake_build_dataloaders,
-    )
-    monkeypatch.setattr("neuroplastic_optimizer.training.runner._run_epoch", fake_run_epoch)
-
-    experiment = {
-        "dataset": "synthetic_mnist",
-        "batch_size": 2,
-        "epochs": 3,
-        "lr": 0.001,
-        "weight_decay": 0.0,
-        "optimizer": "adam",
-        "seed": 123,
-        "num_workers": 0,
-        "output_dir": str(tmp_path / "results"),
-        "checkpoint_dir": str(tmp_path / "checkpoints"),
-        "device": "cpu",
-        "run_name": "exception_case",
-        "save_every_n_epochs": 1,
-        "save_best_only": False,
-    }
-
-    config_path = tmp_path / "exception.yaml"
-    config_path.write_text(yaml.safe_dump({"experiment": experiment}), encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="boom"):
-        run_experiment(str(config_path))
-
-    metrics_path = tmp_path / "results" / "exception_case_synthetic_mnist_adam_metrics.json"
-    assert metrics_path.exists()
-    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-    assert len(metrics["test"]) == 1
+    assert snapshot_path.exists()
+    payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert payload["batch_index"] == 0
+    assert payload["lr"] == pytest.approx(0.01)
+    assert payload["grad_norm"] is None
+    assert payload["config_summary"]["fail_on_non_finite"] is True

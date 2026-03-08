@@ -12,6 +12,7 @@ import numpy as np
 import torch
 import typer
 from torch import nn
+from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
 
 from neuroplastic_optimizer.models.cnn import SmallCIFARNet
@@ -33,41 +34,8 @@ class Metrics(dict[str, float]):
     pass
 
 
-class KeyValueFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload = getattr(record, "event_payload", None)
-        if isinstance(payload, dict):
-            return " ".join(f"{key}={value}" for key, value in payload.items())
-        return record.getMessage()
-
-
-class JsonFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload = getattr(record, "event_payload", None)
-        if isinstance(payload, dict):
-            return json.dumps(payload, ensure_ascii=False)
-        return json.dumps({"message": record.getMessage()}, ensure_ascii=False)
-
-
-def _build_logger(cfg: ExperimentConfig) -> logging.Logger:
-    logger = logging.getLogger("neuroplastic_optimizer.training.runner")
-    logger.propagate = False
-    logger.handlers.clear()
-    level_name = cfg.log_level.upper()
-    logger.setLevel(getattr(logging, level_name, logging.INFO))
-
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter() if cfg.log_json else KeyValueFormatter())
-    logger.addHandler(handler)
-    return logger
-
-
-def _write_event(file_obj, payload: dict[str, Any]) -> None:
-    file_obj.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-
-def _flush_metrics_history(path: Path, history: dict[str, Any]) -> None:
-    dump_json(path, history)
+class NonFiniteLossError(RuntimeError):
+    pass
 
 
 def _get_rng_state() -> dict[str, Any]:
@@ -157,6 +125,41 @@ def _make_optimizer(model: nn.Module, cfg: ExperimentConfig, raw: dict[str, Any]
     )
 
 
+def _collect_optimizer_diagnostics(optimizer: Optimizer) -> dict[str, float]:
+    diagnostics = getattr(optimizer, "last_diagnostics", None)
+    if not isinstance(diagnostics, dict):
+        return {}
+    return {k: float(v) for k, v in diagnostics.items()}
+
+
+def _write_failure_snapshot(
+    snapshot_path: Path,
+    *,
+    batch_index: int,
+    learning_rate: float,
+    grad_norm: float | None,
+    cfg: ExperimentConfig,
+    optimizer: Optimizer,
+) -> None:
+    payload: dict[str, Any] = {
+        "batch_index": batch_index,
+        "lr": learning_rate,
+        "grad_norm": grad_norm,
+        "config_summary": {
+            "dataset": cfg.dataset,
+            "optimizer": cfg.optimizer,
+            "lr": cfg.lr,
+            "batch_size": cfg.batch_size,
+            "max_grad_norm": cfg.max_grad_norm,
+            "fail_on_non_finite": cfg.fail_on_non_finite,
+        },
+    }
+    optimizer_diag = _collect_optimizer_diagnostics(optimizer)
+    if optimizer_diag:
+        payload["optimizer_diagnostics"] = optimizer_diag
+    dump_json(snapshot_path, payload)
+
+
 def _run_epoch(
     model: nn.Module,
     loader,
@@ -164,19 +167,59 @@ def _run_epoch(
     optimizer: Optimizer,
     device: torch.device,
     train: bool,
+    cfg: ExperimentConfig,
+    failure_snapshot_path: Path,
 ) -> Metrics:
     model.train(train)
     total_loss = 0.0
     correct = 0
     total = 0
     with torch.set_grad_enabled(train):
-        for batch_x, batch_y in loader:
+        for batch_index, (batch_x, batch_y) in enumerate(loader):
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
             logits = model(batch_x)
             loss = criterion(logits, batch_y)
             if train:
                 optimizer.zero_grad(set_to_none=True)
+
+                if cfg.fail_on_non_finite and not torch.isfinite(loss).item():
+                    lr = float(optimizer.param_groups[0].get("lr", 0.0))
+                    _write_failure_snapshot(
+                        failure_snapshot_path,
+                        batch_index=batch_index,
+                        learning_rate=lr,
+                        grad_norm=None,
+                        cfg=cfg,
+                        optimizer=optimizer,
+                    )
+                    raise NonFiniteLossError(f"non-finite loss detected at batch {batch_index}")
+
                 loss.backward()
+
+                grad_norm_value: float | None = None
+                if cfg.max_grad_norm is not None:
+                    grad_norm = clip_grad_norm_(model.parameters(), max_norm=cfg.max_grad_norm)
+                    grad_norm_value = float(grad_norm.item())
+                else:
+                    norms: list[torch.Tensor] = []
+                    for p in model.parameters():
+                        if p.grad is not None:
+                            norms.append(p.grad.detach().norm(2))
+                    if norms:
+                        grad_norm_value = float(torch.norm(torch.stack(norms), 2).item())
+
+                if cfg.fail_on_non_finite and grad_norm_value is not None and not np.isfinite(grad_norm_value):
+                    lr = float(optimizer.param_groups[0].get("lr", 0.0))
+                    _write_failure_snapshot(
+                        failure_snapshot_path,
+                        batch_index=batch_index,
+                        learning_rate=lr,
+                        grad_norm=grad_norm_value,
+                        cfg=cfg,
+                        optimizer=optimizer,
+                    )
+                    raise NonFiniteLossError(f"non-finite gradient norm detected at batch {batch_index}")
+
                 optimizer.step()
             total_loss += loss.item() * batch_x.size(0)
             correct += (logits.argmax(dim=1) == batch_y).sum().item()
@@ -228,52 +271,52 @@ def run_experiment(config_path: str) -> dict[str, Any]:
 
     stem = _artifact_stem(config_path, cfg)
     checkpoint_path = ckpt_dir / f"{stem}_model.pt"
-    metrics_path = out_dir / f"{stem}_metrics.json"
-    events_path = out_dir / f"{stem}_events.jsonl"
-    logger = _build_logger(cfg)
+    failure_snapshot_path = out_dir / f"{stem}_failure_snapshot.json"
 
-    with open(events_path, "a", encoding="utf-8") as events_file:
-        try:
-            for epoch in range(start_epoch, cfg.epochs + 1):
-                epoch_start = time.perf_counter()
-                train_metrics = _run_epoch(model, train_loader, criterion, optimizer, device, train=True)
-                test_metrics = _run_epoch(model, test_loader, criterion, optimizer, device, train=False)
-                improved = test_metrics["accuracy"] > best_metric
-                best_metric = max(best_metric, test_metrics["accuracy"])
-                if scheduler is not None:
-                    scheduler.step()
-                lr = float(optimizer.param_groups[0]["lr"])
-                elapsed = time.perf_counter() - epoch_start
-                history["train"].append(train_metrics)
-                history["test"].append(test_metrics)
-                event = {
-                    "epoch": epoch,
-                    "train_loss": float(train_metrics["loss"]),
-                    "train_acc": float(train_metrics["accuracy"]),
-                    "test_loss": float(test_metrics["loss"]),
-                    "test_acc": float(test_metrics["accuracy"]),
-                    "lr": lr,
-                    "time_per_epoch": elapsed,
-                    "device": str(device),
-                }
-                logger.info("epoch_metrics", extra={"event_payload": event})
-                _write_event(events_file, event)
-                events_file.flush()
+    for epoch in range(start_epoch, cfg.epochs + 1):
+        train_metrics = _run_epoch(
+            model,
+            train_loader,
+            criterion,
+            optimizer,
+            device,
+            train=True,
+            cfg=cfg,
+            failure_snapshot_path=failure_snapshot_path,
+        )
+        test_metrics = _run_epoch(
+            model,
+            test_loader,
+            criterion,
+            optimizer,
+            device,
+            train=False,
+            cfg=cfg,
+            failure_snapshot_path=failure_snapshot_path,
+        )
+        improved = test_metrics["accuracy"] > best_metric
+        best_metric = max(best_metric, test_metrics["accuracy"])
+        if scheduler is not None:
+            scheduler.step()
+        history["train"].append(train_metrics)
+        history["test"].append(test_metrics)
+        msg = (
+            f"epoch={epoch} "
+            f"train_loss={train_metrics['loss']:.4f} "
+            f"train_acc={train_metrics['accuracy']:.4f} "
+            f"test_loss={test_metrics['loss']:.4f} "
+            f"test_acc={test_metrics['accuracy']:.4f}"
+        )
+        print(msg)
 
-                checkpoint = _build_checkpoint(model, optimizer, scheduler, epoch, best_metric)
-                should_save = epoch % cfg.save_every_n_epochs == 0
-                if cfg.save_best_only:
-                    should_save = should_save and improved
-                if should_save:
-                    torch.save(checkpoint, checkpoint_path)
+        checkpoint = _build_checkpoint(model, optimizer, scheduler, epoch, best_metric)
+        should_save = epoch % cfg.save_every_n_epochs == 0
+        if cfg.save_best_only:
+            should_save = should_save and improved
+        if should_save:
+            torch.save(checkpoint, checkpoint_path)
 
-                if cfg.metrics_flush_every_epoch:
-                    _flush_metrics_history(metrics_path, history)
-        except Exception:
-            _flush_metrics_history(metrics_path, history)
-            raise
-
-    _flush_metrics_history(metrics_path, history)
+    dump_json(out_dir / f"{stem}_metrics.json", history)
 
     if not checkpoint_path.exists():
         checkpoint_epoch = cfg.epochs if cfg.epochs >= start_epoch else start_epoch - 1

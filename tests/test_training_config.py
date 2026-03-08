@@ -29,10 +29,9 @@ def test_experiment_config_validation_rejects_non_positive_checkpoint_interval()
         cfg.validate()
 
 
-
-def test_experiment_config_validation_rejects_unknown_log_level():
+def test_experiment_config_validation_rejects_non_positive_max_grad_norm():
     from neuroplastic_optimizer.training.config import ExperimentConfig
 
-    cfg = ExperimentConfig(log_level="verbose")
+    cfg = ExperimentConfig(max_grad_norm=0.0)
     with pytest.raises(ValueError):
         cfg.validate()

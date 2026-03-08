@@ -25,3 +25,23 @@ def test_optimizer_step_updates_parameters():
 
     after = model.weight.detach().clone()
     assert not torch.allclose(before, after)
+
+
+def test_optimizer_exposes_step_diagnostics():
+    import torch
+    from torch import nn
+
+    from neuroplastic_optimizer.optimizer import NeuroPlasticOptimizer
+
+    model = nn.Linear(3, 1)
+    x = torch.randn(8, 3)
+    y = torch.randn(8, 1)
+
+    opt = NeuroPlasticOptimizer(model.parameters(), lr=1e-2)
+    loss = nn.MSELoss()(model(x), y)
+    loss.backward()
+    opt.step()
+
+    diagnostics = opt.last_diagnostics
+    assert diagnostics["update_norm_max"] >= 0.0
+    assert diagnostics["alpha_min"] <= diagnostics["alpha_max"]

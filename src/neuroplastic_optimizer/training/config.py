@@ -25,9 +25,8 @@ class ExperimentConfig:
     resume_from: str | None = None
     save_every_n_epochs: int = 1
     save_best_only: bool = False
-    log_level: str = "INFO"
-    log_json: bool = False
-    metrics_flush_every_epoch: bool = True
+    max_grad_norm: float | None = None
+    fail_on_non_finite: bool = True
 
     def validate(self) -> None:
         if self.batch_size <= 0:
@@ -38,6 +37,8 @@ class ExperimentConfig:
             raise ValueError("lr must be > 0")
         if self.save_every_n_epochs <= 0:
             raise ValueError("save_every_n_epochs must be > 0")
+        if self.max_grad_norm is not None and self.max_grad_norm <= 0:
+            raise ValueError("max_grad_norm must be > 0 when set")
         if self.optimizer not in {"neuroplastic", "sgd", "adam", "adamw"}:
             raise ValueError(f"unsupported optimizer: {self.optimizer}")
         valid_levels = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
