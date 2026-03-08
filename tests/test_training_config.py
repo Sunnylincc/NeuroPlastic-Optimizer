@@ -19,3 +19,11 @@ def test_experiment_config_validation_rejects_unknown_optimizer():
     cfg = ExperimentConfig(optimizer="unknown")
     with pytest.raises(ValueError):
         cfg.validate()
+
+
+def test_experiment_config_validation_rejects_non_positive_checkpoint_interval():
+    from neuroplastic_optimizer.training.config import ExperimentConfig
+
+    cfg = ExperimentConfig(save_every_n_epochs=0)
+    with pytest.raises(ValueError):
+        cfg.validate()

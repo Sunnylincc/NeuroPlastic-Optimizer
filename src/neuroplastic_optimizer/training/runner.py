@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 import typer
 from torch import nn
@@ -27,6 +29,51 @@ app = typer.Typer(no_args_is_help=True)
 
 class Metrics(dict[str, float]):
     pass
+
+
+def _get_rng_state() -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "torch": torch.get_rng_state(),
+        "numpy": np.random.get_state(),
+        "python": random.getstate(),
+    }
+    if torch.cuda.is_available():
+        state["torch_cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _set_rng_state(rng_state: dict[str, Any]) -> None:
+    torch_rng = rng_state.get("torch")
+    if torch_rng is not None:
+        torch.set_rng_state(torch_rng)
+    torch_cuda_rng = rng_state.get("torch_cuda")
+    if torch_cuda_rng is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(torch_cuda_rng)
+    numpy_rng = rng_state.get("numpy")
+    if numpy_rng is not None:
+        np.random.set_state(numpy_rng)
+    python_rng = rng_state.get("python")
+    if python_rng is not None:
+        random.setstate(python_rng)
+
+
+def _build_checkpoint(
+    model: nn.Module,
+    optimizer: Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    epoch: int,
+    best_metric: float,
+) -> dict[str, Any]:
+    checkpoint: dict[str, Any] = {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "epoch": epoch,
+        "best_metric": best_metric,
+        "rng_state": _get_rng_state(),
+    }
+    if scheduler is not None:
+        checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+    return checkpoint
 
 
 def _artifact_stem(config_path: str, cfg: ExperimentConfig) -> str:
@@ -114,6 +161,20 @@ def run_experiment(config_path: str) -> dict[str, Any]:
     if cfg.scheduler == "exponential":
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=cfg.scheduler_gamma)
 
+    start_epoch = 1
+    best_metric = float("-inf")
+
+    if cfg.resume_from is not None:
+        resume_path = Path(cfg.resume_from)
+        checkpoint = torch.load(resume_path, map_location=device, weights_only=False)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if scheduler is not None and "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        _set_rng_state(checkpoint.get("rng_state", {}))
+        start_epoch = int(checkpoint["epoch"]) + 1
+        best_metric = float(checkpoint.get("best_metric", best_metric))
+
     history: dict[str, Any] = {
         "train": [],
         "test": [],
@@ -121,9 +182,19 @@ def run_experiment(config_path: str) -> dict[str, Any]:
         "device": str(device),
     }
 
-    for epoch in range(1, cfg.epochs + 1):
+    out_dir = Path(cfg.output_dir)
+    ckpt_dir = Path(cfg.checkpoint_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = _artifact_stem(config_path, cfg)
+    checkpoint_path = ckpt_dir / f"{stem}_model.pt"
+
+    for epoch in range(start_epoch, cfg.epochs + 1):
         train_metrics = _run_epoch(model, train_loader, criterion, optimizer, device, train=True)
         test_metrics = _run_epoch(model, test_loader, criterion, optimizer, device, train=False)
+        improved = test_metrics["accuracy"] > best_metric
+        best_metric = max(best_metric, test_metrics["accuracy"])
         if scheduler is not None:
             scheduler.step()
         history["train"].append(train_metrics)
@@ -137,21 +208,25 @@ def run_experiment(config_path: str) -> dict[str, Any]:
         )
         print(msg)
 
-    out_dir = Path(cfg.output_dir)
-    ckpt_dir = Path(cfg.checkpoint_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint = _build_checkpoint(model, optimizer, scheduler, epoch, best_metric)
+        should_save = epoch % cfg.save_every_n_epochs == 0
+        if cfg.save_best_only:
+            should_save = should_save and improved
+        if should_save:
+            torch.save(checkpoint, checkpoint_path)
 
-    stem = _artifact_stem(config_path, cfg)
     dump_json(out_dir / f"{stem}_metrics.json", history)
 
-    checkpoint_path = ckpt_dir / f"{stem}_model.pt"
-    torch.save(model.state_dict(), checkpoint_path)
+    if not checkpoint_path.exists():
+        checkpoint_epoch = cfg.epochs if cfg.epochs >= start_epoch else start_epoch - 1
+        checkpoint = _build_checkpoint(model, optimizer, scheduler, checkpoint_epoch, best_metric)
+        torch.save(checkpoint, checkpoint_path)
 
+    last_test_loss = history["test"][-1]["loss"] if history["test"] else None
     summary = {
         "run_name": cfg.run_name,
-        "best_test_accuracy": max(item["accuracy"] for item in history["test"]),
-        "last_test_loss": history["test"][-1]["loss"],
+        "best_test_accuracy": best_metric,
+        "last_test_loss": last_test_loss,
         "optimizer": cfg.optimizer,
         "dataset": cfg.dataset,
         "checkpoint": str(checkpoint_path),

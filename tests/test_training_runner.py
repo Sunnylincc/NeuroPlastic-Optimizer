@@ -1,4 +1,8 @@
 import importlib.util
+from pathlib import Path
+
+import torch
+import yaml
 
 import pytest
 
@@ -25,3 +29,74 @@ def test_resolve_device_returns_requested_cpu():
     from neuroplastic_optimizer.training.runner import _resolve_device
 
     assert str(_resolve_device("cpu")) == "cpu"
+
+
+def test_run_experiment_resume_from_checkpoint_continues_epoch_and_metric(tmp_path, monkeypatch):
+    from neuroplastic_optimizer.training.runner import run_experiment
+
+    epoch_log: list[int] = []
+
+    def fake_build_dataloaders(dataset: str, batch_size: int, num_workers: int):
+        return [object()], [object()]
+
+    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool):
+        if train:
+            optimizer.param_groups[0]["lr"] *= 0.99
+            return {"loss": 1.0, "accuracy": 0.2}
+        epoch = len(epoch_log) + 1
+        epoch_log.append(epoch)
+        return {"loss": 1.0 / epoch, "accuracy": 0.5 + 0.1 * epoch}
+
+    monkeypatch.setattr(
+        "neuroplastic_optimizer.training.runner.build_dataloaders",
+        fake_build_dataloaders,
+    )
+    monkeypatch.setattr("neuroplastic_optimizer.training.runner._run_epoch", fake_run_epoch)
+
+    base_experiment = {
+        "dataset": "synthetic_mnist",
+        "batch_size": 2,
+        "epochs": 2,
+        "lr": 0.001,
+        "weight_decay": 0.0,
+        "optimizer": "adam",
+        "seed": 123,
+        "num_workers": 0,
+        "output_dir": str(tmp_path / "results"),
+        "checkpoint_dir": str(tmp_path / "checkpoints"),
+        "device": "cpu",
+        "run_name": "resume_case",
+        "scheduler": "exponential",
+        "scheduler_gamma": 0.9,
+        "save_every_n_epochs": 1,
+        "save_best_only": False,
+    }
+
+    config_path = tmp_path / "first.yaml"
+    config_path.write_text(yaml.safe_dump({"experiment": base_experiment}), encoding="utf-8")
+
+    first_summary = run_experiment(str(config_path))
+    checkpoint_path = Path(first_summary["checkpoint"])
+    assert checkpoint_path.exists()
+    first_checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    assert first_checkpoint["epoch"] == 2
+    assert first_checkpoint["best_metric"] == pytest.approx(0.7)
+    assert "model_state_dict" in first_checkpoint
+    assert "optimizer_state_dict" in first_checkpoint
+    assert "scheduler_state_dict" in first_checkpoint
+    assert "rng_state" in first_checkpoint
+
+    resumed_experiment = {
+        **base_experiment,
+        "epochs": 4,
+        "resume_from": str(checkpoint_path),
+    }
+    resume_config_path = tmp_path / "resume.yaml"
+    resume_config_path.write_text(yaml.safe_dump({"experiment": resumed_experiment}), encoding="utf-8")
+
+    second_summary = run_experiment(str(resume_config_path))
+    resumed_checkpoint = torch.load(Path(second_summary["checkpoint"]), map_location="cpu", weights_only=False)
+
+    assert resumed_checkpoint["epoch"] == 4
+    assert resumed_checkpoint["best_metric"] == pytest.approx(0.9)
+    assert second_summary["best_test_accuracy"] == pytest.approx(0.9)
