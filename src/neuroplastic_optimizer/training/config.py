@@ -41,6 +41,9 @@ class ExperimentConfig:
             raise ValueError("max_grad_norm must be > 0 when set")
         if self.optimizer not in {"neuroplastic", "sgd", "adam", "adamw"}:
             raise ValueError(f"unsupported optimizer: {self.optimizer}")
+        valid_levels = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
+        if self.log_level.upper() not in valid_levels:
+            raise ValueError(f"unsupported log_level: {self.log_level}")
 
 
 def plasticity_config_from_dict(data: dict) -> PlasticityConfig:
