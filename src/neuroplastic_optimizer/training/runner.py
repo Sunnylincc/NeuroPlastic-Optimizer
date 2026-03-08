@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,43 @@ app = typer.Typer(no_args_is_help=True)
 
 class Metrics(dict[str, float]):
     pass
+
+
+class KeyValueFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = getattr(record, "event_payload", None)
+        if isinstance(payload, dict):
+            return " ".join(f"{key}={value}" for key, value in payload.items())
+        return record.getMessage()
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = getattr(record, "event_payload", None)
+        if isinstance(payload, dict):
+            return json.dumps(payload, ensure_ascii=False)
+        return json.dumps({"message": record.getMessage()}, ensure_ascii=False)
+
+
+def _build_logger(cfg: ExperimentConfig) -> logging.Logger:
+    logger = logging.getLogger("neuroplastic_optimizer.training.runner")
+    logger.propagate = False
+    logger.handlers.clear()
+    level_name = cfg.log_level.upper()
+    logger.setLevel(getattr(logging, level_name, logging.INFO))
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter() if cfg.log_json else KeyValueFormatter())
+    logger.addHandler(handler)
+    return logger
+
+
+def _write_event(file_obj, payload: dict[str, Any]) -> None:
+    file_obj.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _flush_metrics_history(path: Path, history: dict[str, Any]) -> None:
+    dump_json(path, history)
 
 
 def _get_rng_state() -> dict[str, Any]:
@@ -189,33 +228,52 @@ def run_experiment(config_path: str) -> dict[str, Any]:
 
     stem = _artifact_stem(config_path, cfg)
     checkpoint_path = ckpt_dir / f"{stem}_model.pt"
+    metrics_path = out_dir / f"{stem}_metrics.json"
+    events_path = out_dir / f"{stem}_events.jsonl"
+    logger = _build_logger(cfg)
 
-    for epoch in range(start_epoch, cfg.epochs + 1):
-        train_metrics = _run_epoch(model, train_loader, criterion, optimizer, device, train=True)
-        test_metrics = _run_epoch(model, test_loader, criterion, optimizer, device, train=False)
-        improved = test_metrics["accuracy"] > best_metric
-        best_metric = max(best_metric, test_metrics["accuracy"])
-        if scheduler is not None:
-            scheduler.step()
-        history["train"].append(train_metrics)
-        history["test"].append(test_metrics)
-        msg = (
-            f"epoch={epoch} "
-            f"train_loss={train_metrics['loss']:.4f} "
-            f"train_acc={train_metrics['accuracy']:.4f} "
-            f"test_loss={test_metrics['loss']:.4f} "
-            f"test_acc={test_metrics['accuracy']:.4f}"
-        )
-        print(msg)
+    with open(events_path, "a", encoding="utf-8") as events_file:
+        try:
+            for epoch in range(start_epoch, cfg.epochs + 1):
+                epoch_start = time.perf_counter()
+                train_metrics = _run_epoch(model, train_loader, criterion, optimizer, device, train=True)
+                test_metrics = _run_epoch(model, test_loader, criterion, optimizer, device, train=False)
+                improved = test_metrics["accuracy"] > best_metric
+                best_metric = max(best_metric, test_metrics["accuracy"])
+                if scheduler is not None:
+                    scheduler.step()
+                lr = float(optimizer.param_groups[0]["lr"])
+                elapsed = time.perf_counter() - epoch_start
+                history["train"].append(train_metrics)
+                history["test"].append(test_metrics)
+                event = {
+                    "epoch": epoch,
+                    "train_loss": float(train_metrics["loss"]),
+                    "train_acc": float(train_metrics["accuracy"]),
+                    "test_loss": float(test_metrics["loss"]),
+                    "test_acc": float(test_metrics["accuracy"]),
+                    "lr": lr,
+                    "time_per_epoch": elapsed,
+                    "device": str(device),
+                }
+                logger.info("epoch_metrics", extra={"event_payload": event})
+                _write_event(events_file, event)
+                events_file.flush()
 
-        checkpoint = _build_checkpoint(model, optimizer, scheduler, epoch, best_metric)
-        should_save = epoch % cfg.save_every_n_epochs == 0
-        if cfg.save_best_only:
-            should_save = should_save and improved
-        if should_save:
-            torch.save(checkpoint, checkpoint_path)
+                checkpoint = _build_checkpoint(model, optimizer, scheduler, epoch, best_metric)
+                should_save = epoch % cfg.save_every_n_epochs == 0
+                if cfg.save_best_only:
+                    should_save = should_save and improved
+                if should_save:
+                    torch.save(checkpoint, checkpoint_path)
 
-    dump_json(out_dir / f"{stem}_metrics.json", history)
+                if cfg.metrics_flush_every_epoch:
+                    _flush_metrics_history(metrics_path, history)
+        except Exception:
+            _flush_metrics_history(metrics_path, history)
+            raise
+
+    _flush_metrics_history(metrics_path, history)
 
     if not checkpoint_path.exists():
         checkpoint_epoch = cfg.epochs if cfg.epochs >= start_epoch else start_epoch - 1

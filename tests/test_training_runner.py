@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import torch
@@ -100,3 +101,112 @@ def test_run_experiment_resume_from_checkpoint_continues_epoch_and_metric(tmp_pa
     assert resumed_checkpoint["epoch"] == 4
     assert resumed_checkpoint["best_metric"] == pytest.approx(0.9)
     assert second_summary["best_test_accuracy"] == pytest.approx(0.9)
+
+
+
+def test_run_experiment_writes_jsonl_events_with_required_fields(tmp_path, monkeypatch):
+    from neuroplastic_optimizer.training.runner import run_experiment
+
+    def fake_build_dataloaders(dataset: str, batch_size: int, num_workers: int):
+        return [object()], [object()]
+
+    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool):
+        if train:
+            return {"loss": 0.8, "accuracy": 0.7}
+        return {"loss": 0.6, "accuracy": 0.75}
+
+    monkeypatch.setattr(
+        "neuroplastic_optimizer.training.runner.build_dataloaders",
+        fake_build_dataloaders,
+    )
+    monkeypatch.setattr("neuroplastic_optimizer.training.runner._run_epoch", fake_run_epoch)
+
+    experiment = {
+        "dataset": "synthetic_mnist",
+        "batch_size": 2,
+        "epochs": 2,
+        "lr": 0.001,
+        "weight_decay": 0.0,
+        "optimizer": "adam",
+        "seed": 123,
+        "num_workers": 0,
+        "output_dir": str(tmp_path / "results"),
+        "checkpoint_dir": str(tmp_path / "checkpoints"),
+        "device": "cpu",
+        "run_name": "event_case",
+        "save_every_n_epochs": 1,
+        "save_best_only": False,
+        "log_json": True,
+    }
+
+    config_path = tmp_path / "event.yaml"
+    config_path.write_text(yaml.safe_dump({"experiment": experiment}), encoding="utf-8")
+
+    run_experiment(str(config_path))
+
+    events_path = tmp_path / "results" / "event_case_synthetic_mnist_adam_events.jsonl"
+    assert events_path.exists()
+    lines = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 2
+    required = {
+        "epoch",
+        "train_loss",
+        "train_acc",
+        "test_loss",
+        "test_acc",
+        "lr",
+        "time_per_epoch",
+        "device",
+    }
+    assert required.issubset(lines[0].keys())
+
+
+def test_run_experiment_flushes_metrics_on_exception(tmp_path, monkeypatch):
+    from neuroplastic_optimizer.training.runner import run_experiment
+
+    calls = {"count": 0}
+
+    def fake_build_dataloaders(dataset: str, batch_size: int, num_workers: int):
+        return [object()], [object()]
+
+    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool):
+        if train:
+            return {"loss": 0.9, "accuracy": 0.1}
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("boom")
+        return {"loss": 0.8, "accuracy": 0.2}
+
+    monkeypatch.setattr(
+        "neuroplastic_optimizer.training.runner.build_dataloaders",
+        fake_build_dataloaders,
+    )
+    monkeypatch.setattr("neuroplastic_optimizer.training.runner._run_epoch", fake_run_epoch)
+
+    experiment = {
+        "dataset": "synthetic_mnist",
+        "batch_size": 2,
+        "epochs": 3,
+        "lr": 0.001,
+        "weight_decay": 0.0,
+        "optimizer": "adam",
+        "seed": 123,
+        "num_workers": 0,
+        "output_dir": str(tmp_path / "results"),
+        "checkpoint_dir": str(tmp_path / "checkpoints"),
+        "device": "cpu",
+        "run_name": "exception_case",
+        "save_every_n_epochs": 1,
+        "save_best_only": False,
+    }
+
+    config_path = tmp_path / "exception.yaml"
+    config_path.write_text(yaml.safe_dump({"experiment": experiment}), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run_experiment(str(config_path))
+
+    metrics_path = tmp_path / "results" / "exception_case_synthetic_mnist_adam_metrics.json"
+    assert metrics_path.exists()
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert len(metrics["test"]) == 1
