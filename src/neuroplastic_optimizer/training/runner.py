@@ -197,6 +197,8 @@ def _run_epoch(
 
     if train:
         optimizer.zero_grad(set_to_none=True)
+        if hasattr(optimizer, "reset_diagnostics"):
+            optimizer.reset_diagnostics()
 
     use_scaler = train and mixed_precision and scaler is not None and scaler.is_enabled()
 
@@ -204,7 +206,11 @@ def _run_epoch(
         for batch_idx, (batch_x, batch_y) in enumerate(loader, start=1):
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
             autocast_context = (
-                torch.autocast(device_type=device.type, dtype=_resolve_amp_dtype(amp_dtype), enabled=amp_enabled)
+                torch.autocast(
+                    device_type=device.type,
+                    dtype=_resolve_amp_dtype(amp_dtype),
+                    enabled=amp_enabled,
+                )
                 if device.type in {"cuda", "cpu"}
                 else nullcontext()
             )
@@ -231,7 +237,10 @@ def _run_epoch(
             total_loss += loss.item() * batch_x.size(0)
             correct += (logits.argmax(dim=1) == batch_y).sum().item()
             total += batch_x.size(0)
-    return Metrics(loss=total_loss / total, accuracy=correct / total), update_steps
+    metrics = Metrics(loss=total_loss / total, accuracy=correct / total)
+    if train and hasattr(optimizer, "collect_diagnostics"):
+        metrics.update(optimizer.collect_diagnostics())
+    return metrics, update_steps
 
 
 def run_experiment(config_path: str) -> dict[str, Any]:
@@ -265,7 +274,7 @@ def run_experiment(config_path: str) -> dict[str, Any]:
     if cfg.scheduler == "exponential":
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=cfg.scheduler_gamma)
 
-    scaler = torch.cuda.amp.GradScaler(enabled=cfg.mixed_precision and device.type == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=cfg.mixed_precision and device.type == "cuda")
 
     start_epoch = 1
     best_metric = float("-inf")
@@ -288,6 +297,7 @@ def run_experiment(config_path: str) -> dict[str, Any]:
     history: dict[str, Any] = {
         "train": [],
         "test": [],
+        "optimizer_diagnostics": [],
         "config": asdict(cfg),
         "device": str(device),
         "distributed": distributed_state,
@@ -341,6 +351,16 @@ def run_experiment(config_path: str) -> dict[str, Any]:
                 elapsed = time.perf_counter() - epoch_start
                 history["train"].append(train_metrics)
                 history["test"].append(test_metrics)
+                optimizer_diagnostics = {
+                    key: float(value)
+                    for key, value in train_metrics.items()
+                    if key
+                    not in {
+                        "loss",
+                        "accuracy",
+                    }
+                }
+                history["optimizer_diagnostics"].append(optimizer_diagnostics)
                 event = {
                     "epoch": epoch,
                     "train_loss": float(train_metrics["loss"]),
@@ -353,6 +373,8 @@ def run_experiment(config_path: str) -> dict[str, Any]:
                     "update_steps": update_steps,
                     "global_update_step": global_update_step,
                 }
+                if optimizer_diagnostics:
+                    event["optimizer_diagnostics"] = optimizer_diagnostics
                 logger.info("epoch_metrics", extra={"event_payload": event})
                 _write_event(events_file, event)
                 events_file.flush()

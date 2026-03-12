@@ -3,7 +3,7 @@ experiment:
   run_name: neuroplastic
   batch_size: 128
   epochs: 3
-  lr: 0.001
+  lr: 0.1
   weight_decay: 0.0
   optimizer: neuroplastic
   seed: 42

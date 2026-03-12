@@ -42,29 +42,24 @@ def compute_plasticity(
     grad_signal = _standardize(grad.abs(), config.eps)
 
     if config.mode is PlasticityMode.ABLATION_GRAD_ONLY:
-        if config.layerwise or not config.parameterwise:
-            alpha = _expand_scalar_like(grad_signal.mean(), grad_signal)
-        else:
+        if config.parameterwise:
             alpha = grad_signal
+        else:
+            alpha = _expand_scalar_like(grad_signal.mean(), grad_signal)
         return alpha.clamp(config.min_alpha, config.max_alpha)
 
     activity_signal = _standardize(activity_trace, config.eps)
     memory_signal = _standardize(momentum.abs() / (variance.sqrt() + config.eps), config.eps)
 
-    if config.layerwise:
-        fused_scalar = (
-            config.activity_weight * activity_signal.mean()
-            + config.gradient_weight * grad_signal.mean()
-            + config.memory_weight * memory_signal.mean()
-        )
-        alpha = _expand_scalar_like(fused_scalar, grad_signal)
-    else:
-        alpha = (
-            config.activity_weight * activity_signal
-            + config.gradient_weight * grad_signal
-            + config.memory_weight * memory_signal
-        )
+    alpha = (
+        config.activity_weight * activity_signal
+        + config.gradient_weight * grad_signal
+        + config.memory_weight * memory_signal
+    )
 
+    # When parameterwise modulation is enabled, preserve the per-parameter signal.
+    # Collapsing the mean of already standardized signals yields alpha ~= 1 and
+    # makes the rule-based and grad-only paths nearly identical.
     if not config.parameterwise:
         alpha = _expand_scalar_like(alpha.mean(), alpha)
 

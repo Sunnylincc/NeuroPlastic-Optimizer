@@ -98,3 +98,38 @@ def test_short_regression_run_does_not_diverge_on_synthetic_data():
     assert final_loss < losses[0]
     assert final_loss < 6.0
     assert 0.01 < weight_norm < 20.0
+
+
+def test_optimizer_collects_lightweight_diagnostics():
+    import torch
+    from torch import nn
+
+    from neuroplastic_optimizer.optimizer import NeuroPlasticOptimizer
+
+    model = nn.Linear(4, 2)
+    x = torch.randn(16, 4)
+    y = torch.randn(16, 2)
+    criterion = nn.MSELoss()
+
+    opt = NeuroPlasticOptimizer(model.parameters(), lr=1e-2)
+    opt.reset_diagnostics()
+    loss = criterion(model(x), y)
+    loss.backward()
+    opt.step()
+
+    diagnostics = opt.collect_diagnostics()
+    required = {
+        "alpha_mean",
+        "alpha_median",
+        "alpha_min",
+        "alpha_max",
+        "alpha_fraction_at_min",
+        "alpha_fraction_at_max",
+        "raw_gradient_norm",
+        "raw_update_norm",
+        "effective_update_norm",
+        "effective_to_gradient_norm_ratio",
+        "stabilization_norm_ratio",
+    }
+    assert required.issubset(diagnostics.keys())
+    assert diagnostics["raw_gradient_norm"] > 0

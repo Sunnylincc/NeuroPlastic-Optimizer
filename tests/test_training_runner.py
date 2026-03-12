@@ -93,15 +93,18 @@ def test_run_experiment_resume_from_checkpoint_continues_epoch_and_metric(tmp_pa
         "resume_from": str(checkpoint_path),
     }
     resume_config_path = tmp_path / "resume.yaml"
-    resume_config_path.write_text(yaml.safe_dump({"experiment": resumed_experiment}), encoding="utf-8")
+    resume_config_path.write_text(
+        yaml.safe_dump({"experiment": resumed_experiment}), encoding="utf-8"
+    )
 
     second_summary = run_experiment(str(resume_config_path))
-    resumed_checkpoint = torch.load(Path(second_summary["checkpoint"]), map_location="cpu", weights_only=False)
+    resumed_checkpoint = torch.load(
+        Path(second_summary["checkpoint"]), map_location="cpu", weights_only=False
+    )
 
     assert resumed_checkpoint["epoch"] == 4
     assert resumed_checkpoint["best_metric"] == pytest.approx(0.9)
     assert second_summary["best_test_accuracy"] == pytest.approx(0.9)
-
 
 
 def test_run_experiment_writes_jsonl_events_with_required_fields(tmp_path, monkeypatch):
@@ -146,7 +149,11 @@ def test_run_experiment_writes_jsonl_events_with_required_fields(tmp_path, monke
 
     events_path = tmp_path / "results" / "event_case_synthetic_mnist_adam_events.jsonl"
     assert events_path.exists()
-    lines = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    lines = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     assert len(lines) == 2
     required = {
         "epoch",
@@ -159,6 +166,75 @@ def test_run_experiment_writes_jsonl_events_with_required_fields(tmp_path, monke
         "device",
     }
     assert required.issubset(lines[0].keys())
+
+
+def test_run_experiment_persists_optimizer_diagnostics(tmp_path, monkeypatch):
+    from neuroplastic_optimizer.training.runner import run_experiment
+
+    def fake_build_dataloaders(dataset: str, batch_size: int, num_workers: int, **kwargs):
+        return [object()], [object()]
+
+    def fake_run_epoch(model, loader, criterion, optimizer, device, train: bool, **kwargs):
+        if train:
+            return {
+                "loss": 0.8,
+                "accuracy": 0.7,
+                "alpha_mean": 1.1,
+                "alpha_median": 1.0,
+                "alpha_min": 0.3,
+                "alpha_max": 2.0,
+                "alpha_fraction_at_min": 0.1,
+                "alpha_fraction_at_max": 0.2,
+                "raw_gradient_norm": 4.0,
+                "raw_update_norm": 4.4,
+                "effective_update_norm": 3.6,
+                "effective_to_gradient_norm_ratio": 0.9,
+                "stabilization_norm_ratio": 0.8,
+            }, 1
+        return {"loss": 0.6, "accuracy": 0.75}, 0
+
+    monkeypatch.setattr(
+        "neuroplastic_optimizer.training.runner.build_dataloaders",
+        fake_build_dataloaders,
+    )
+    monkeypatch.setattr("neuroplastic_optimizer.training.runner._run_epoch", fake_run_epoch)
+
+    experiment = {
+        "dataset": "synthetic_mnist",
+        "batch_size": 2,
+        "epochs": 1,
+        "lr": 0.001,
+        "weight_decay": 0.0,
+        "optimizer": "neuroplastic",
+        "seed": 123,
+        "num_workers": 0,
+        "output_dir": str(tmp_path / "results"),
+        "checkpoint_dir": str(tmp_path / "checkpoints"),
+        "device": "cpu",
+        "run_name": "diagnostic_case",
+        "save_every_n_epochs": 1,
+        "save_best_only": False,
+        "log_json": True,
+    }
+
+    config_path = tmp_path / "diagnostic.yaml"
+    config_path.write_text(yaml.safe_dump({"experiment": experiment}), encoding="utf-8")
+
+    run_experiment(str(config_path))
+
+    metrics_path = (
+        tmp_path / "results" / "diagnostic_case_synthetic_mnist_neuroplastic_metrics.json"
+    )
+    events_path = tmp_path / "results" / "diagnostic_case_synthetic_mnist_neuroplastic_events.jsonl"
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    events = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert metrics["optimizer_diagnostics"][0]["alpha_mean"] == pytest.approx(1.1)
+    assert events[0]["optimizer_diagnostics"]["stabilization_norm_ratio"] == pytest.approx(0.8)
 
 
 def test_run_experiment_flushes_metrics_on_exception(tmp_path, monkeypatch):

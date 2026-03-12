@@ -8,17 +8,19 @@ pytestmark = pytest.mark.skipif(importlib.util.find_spec("torch") is None, reaso
 @pytest.mark.parametrize(
     "mode,layerwise,parameterwise,expect_uniform",
     [
-        ("rule_based", True, True, True),
+        ("rule_based", True, True, False),
         ("rule_based", True, False, True),
         ("rule_based", False, False, True),
         ("rule_based", False, True, False),
-        ("ablation_grad_only", True, True, True),
+        ("ablation_grad_only", True, True, False),
         ("ablation_grad_only", True, False, True),
         ("ablation_grad_only", False, False, True),
         ("ablation_grad_only", False, True, False),
     ],
 )
-def test_plasticity_mode_and_granularity_combinations(mode, layerwise, parameterwise, expect_uniform):
+def test_plasticity_mode_and_granularity_combinations(
+    mode, layerwise, parameterwise, expect_uniform
+):
     import torch
 
     from neuroplastic_optimizer.plasticity import (
@@ -72,7 +74,9 @@ def test_plasticity_mode_and_granularity_combinations(mode, layerwise, parameter
         ),
     ],
 )
-def test_plasticity_alpha_clamp_boundaries(grad, trace, momentum, variance, min_alpha, max_alpha, expected):
+def test_plasticity_alpha_clamp_boundaries(
+    grad, trace, momentum, variance, min_alpha, max_alpha, expected
+):
     import torch
 
     from neuroplastic_optimizer.plasticity import PlasticityConfig, compute_plasticity
@@ -97,3 +101,25 @@ def test_plasticity_alpha_clamp_boundaries(grad, trace, momentum, variance, min_
     else:
         assert torch.isclose(alpha.max(), torch.tensor(max_alpha))
         assert torch.all(alpha <= max_alpha)
+
+
+def test_rule_based_parameterwise_path_does_not_collapse_to_constant_one():
+    import torch
+
+    from neuroplastic_optimizer.plasticity import PlasticityConfig, compute_plasticity
+
+    grad = torch.tensor([1.0, 2.0, 8.0, 16.0], dtype=torch.float32)
+    trace = torch.tensor([0.5, 1.0, 2.0, 4.0], dtype=torch.float32)
+    momentum = torch.tensor([0.25, 0.5, 1.0, 2.0], dtype=torch.float32)
+    variance = torch.tensor([1.0, 1.0, 1.0, 1.0], dtype=torch.float32)
+
+    cfg = PlasticityConfig(
+        layerwise=True,
+        parameterwise=True,
+        min_alpha=0.2,
+        max_alpha=2.0,
+    )
+    alpha = compute_plasticity(grad, trace, momentum, variance, cfg)
+
+    assert torch.unique(alpha).numel() > 1
+    assert not torch.allclose(alpha, torch.ones_like(alpha))
