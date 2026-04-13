@@ -14,16 +14,50 @@ class PlasticityMode(str, Enum):
 @dataclass(slots=True)
 class PlasticityConfig:
     mode: PlasticityMode = PlasticityMode.RULE_BASED
+    hybrid_base: str = "classic"
+    modulation_target: str = "gain"
+    modulation_scope: str = "all"
+    modulation_schedule: str = "constant"
+    lr_controller_mode: str = "off"
+    layer_scope: str = "all"
+    phase_scope: str = "full"
+    modulation_strength: float = 0.15
+    modulation_max_ratio: float = 0.25
+    controller_alpha: float = 0.1
+    controller_low: float = 0.8
+    controller_high: float = 1.2
+    base_momentum: float = 0.9
+    base_beta2: float = 0.999
+    base_eps: float = 1e-8
+    late_start_fraction: float = 0.6
     activity_weight: float = 0.4
     gradient_weight: float = 0.4
     memory_weight: float = 0.2
     plasticity_scale: float = 1.0
     warmup_epochs: int = 0
+    bounded_residual: bool = False
+    residual_max_ratio: float = 0.5
+    orthogonal_residual: bool = False
+    orthogonal_lambda: float = 0.1
+    orthogonal_max_ratio: float = 0.5
+    orthogonal_normalization: str = "raw"
+    orthogonal_schedule: str = "constant"
+    orthogonal_late_start_fraction: float = 0.3
     min_alpha: float = 0.2
     max_alpha: float = 2.0
+    saturation_threshold_fraction: float = 0.05
     layerwise: bool = True
     parameterwise: bool = True
     eps: float = 1e-8
+
+    def __post_init__(self) -> None:
+        if self.layer_scope == "all" and self.modulation_scope != "all":
+            self.layer_scope = self.modulation_scope
+        if self.phase_scope == "full" and self.modulation_schedule != "constant":
+            self.phase_scope = {
+                "warmup": "early",
+                "late": "late",
+            }.get(self.modulation_schedule, "full")
 
 
 def _standardize(x: torch.Tensor, eps: float) -> torch.Tensor:
