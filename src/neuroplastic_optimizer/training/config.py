@@ -111,6 +111,50 @@ class ExperimentConfig:
 
 
 def validate_plasticity_config(config: PlasticityConfig) -> None:
+    if config.hybrid_base not in {"classic", "sgd_momentum", "adamw"}:
+        raise ValueError("hybrid_base must be one of: classic, sgd_momentum, adamw")
+    if config.modulation_target not in {"gain", "momentum", "trust_ratio"}:
+        raise ValueError("modulation_target must be one of: gain, momentum, trust_ratio")
+    if config.modulation_scope not in {"all", "late", "conv_only"}:
+        raise ValueError("modulation_scope must be one of: all, late, conv_only")
+    if config.modulation_schedule not in {"constant", "warmup", "late"}:
+        raise ValueError("modulation_schedule must be one of: constant, warmup, late")
+    if config.lr_controller_mode not in {"off", "global", "layerwise", "classifier_only"}:
+        raise ValueError(
+            "lr_controller_mode must be one of: off, global, layerwise, classifier_only"
+        )
+    if config.layer_scope not in {
+        "all",
+        "conv_only",
+        "classifier_only",
+        "head_only",
+        "early_blocks",
+        "late_blocks",
+        "late",
+    }:
+        raise ValueError(
+            "layer_scope must be one of: all, conv_only, classifier_only, head_only, early_blocks, late_blocks, late"
+        )
+    if config.phase_scope not in {"full", "early", "middle", "late"}:
+        raise ValueError("phase_scope must be one of: full, early, middle, late")
+    if config.modulation_strength < 0:
+        raise ValueError("modulation_strength must be >= 0")
+    if not (0.0 <= config.modulation_max_ratio <= 1.0):
+        raise ValueError("modulation_max_ratio must be in [0, 1]")
+    if config.controller_alpha < 0:
+        raise ValueError("controller_alpha must be >= 0")
+    if config.controller_low <= 0:
+        raise ValueError("controller_low must be > 0")
+    if config.controller_high < config.controller_low:
+        raise ValueError("controller_high must be >= controller_low")
+    if not (0.0 < config.base_momentum < 1.0):
+        raise ValueError("base_momentum must be in (0, 1)")
+    if not (0.0 < config.base_beta2 < 1.0):
+        raise ValueError("base_beta2 must be in (0, 1)")
+    if config.base_eps <= 0:
+        raise ValueError("base_eps must be > 0")
+    if not (0.0 <= config.late_start_fraction < 1.0):
+        raise ValueError("late_start_fraction must be in [0, 1)")
     if config.activity_weight < 0 or config.gradient_weight < 0 or config.memory_weight < 0:
         raise ValueError("plasticity weights must be >= 0")
     weight_sum = config.activity_weight + config.gradient_weight + config.memory_weight
@@ -120,10 +164,24 @@ def validate_plasticity_config(config: PlasticityConfig) -> None:
         raise ValueError("plasticity_scale must be >= 0")
     if config.warmup_epochs < 0:
         raise ValueError("warmup_epochs must be >= 0")
+    if not (0.0 <= config.residual_max_ratio <= 1.0):
+        raise ValueError("residual_max_ratio must be in [0, 1]")
+    if config.orthogonal_lambda < 0:
+        raise ValueError("orthogonal_lambda must be >= 0")
+    if not (0.0 <= config.orthogonal_max_ratio <= 1.0):
+        raise ValueError("orthogonal_max_ratio must be in [0, 1]")
+    if config.orthogonal_normalization not in {"raw", "match_grad_norm"}:
+        raise ValueError("orthogonal_normalization must be one of: raw, match_grad_norm")
+    if config.orthogonal_schedule not in {"constant", "late", "cosine"}:
+        raise ValueError("orthogonal_schedule must be one of: constant, late, cosine")
+    if not (0.0 <= config.orthogonal_late_start_fraction < 1.0):
+        raise ValueError("orthogonal_late_start_fraction must be in [0, 1)")
     if config.min_alpha > config.max_alpha:
         raise ValueError("plasticity min_alpha must be <= max_alpha")
     if config.min_alpha <= 0 or config.max_alpha <= 0:
         raise ValueError("plasticity alpha bounds must be > 0")
+    if not (0.0 <= config.saturation_threshold_fraction <= 0.5):
+        raise ValueError("plasticity saturation_threshold_fraction must be in [0, 0.5]")
     if config.eps <= 0:
         raise ValueError("plasticity eps must be > 0")
 
@@ -135,21 +193,66 @@ def validate_homeostatic_config(config: HomeostaticConfig) -> None:
         raise ValueError("homeostatic target_rms must be > 0")
     if not (0 <= config.adaptation_rate <= 1):
         raise ValueError("homeostatic adaptation_rate must be in [0, 1]")
+    for name, value in (
+        ("early_target_rms_scale", config.early_target_rms_scale),
+        ("middle_target_rms_scale", config.middle_target_rms_scale),
+        ("late_target_rms_scale", config.late_target_rms_scale),
+    ):
+        if value <= 0:
+            raise ValueError(f"homeostatic {name} must be > 0")
     if config.eps <= 0:
         raise ValueError("homeostatic eps must be > 0")
 
 
 def plasticity_config_from_dict(data: dict) -> PlasticityConfig:
     mode = PlasticityMode(data.get("mode", "rule_based"))
+    modulation_schedule = str(data.get("modulation_schedule", "constant"))
+    phase_scope = str(
+        data.get(
+            "phase_scope",
+            {
+                "constant": "full",
+                "warmup": "early",
+                "late": "late",
+            }.get(modulation_schedule, "full"),
+        )
+    )
     config = PlasticityConfig(
         mode=mode,
+        hybrid_base=str(data.get("hybrid_base", "classic")),
+        modulation_target=str(data.get("modulation_target", "gain")),
+        modulation_scope=str(data.get("modulation_scope", "all")),
+        modulation_schedule=modulation_schedule,
+        lr_controller_mode=str(data.get("lr_controller_mode", "off")),
+        layer_scope=str(data.get("layer_scope", data.get("modulation_scope", "all"))),
+        phase_scope=phase_scope,
+        modulation_strength=float(data.get("modulation_strength", 0.15)),
+        modulation_max_ratio=float(data.get("modulation_max_ratio", 0.25)),
+        controller_alpha=float(data.get("controller_alpha", 0.1)),
+        controller_low=float(data.get("controller_low", 0.8)),
+        controller_high=float(data.get("controller_high", 1.2)),
+        base_momentum=float(data.get("base_momentum", 0.9)),
+        base_beta2=float(data.get("base_beta2", 0.999)),
+        base_eps=float(data.get("base_eps", 1e-8)),
+        late_start_fraction=float(data.get("late_start_fraction", 0.6)),
         activity_weight=float(data.get("activity_weight", 0.4)),
         gradient_weight=float(data.get("gradient_weight", 0.4)),
         memory_weight=float(data.get("memory_weight", 0.2)),
         plasticity_scale=float(data.get("plasticity_scale", 1.0)),
         warmup_epochs=int(data.get("warmup_epochs", 0)),
+        bounded_residual=bool(data.get("bounded_residual", False)),
+        residual_max_ratio=float(data.get("residual_max_ratio", data.get("residual_cap", 0.5))),
+        orthogonal_residual=bool(data.get("orthogonal_residual", False)),
+        orthogonal_lambda=float(data.get("orthogonal_lambda", 0.1)),
+        orthogonal_max_ratio=float(
+            data.get("orthogonal_max_ratio", data.get("residual_max_ratio", data.get("residual_cap", 0.5)))
+        ),
+        orthogonal_normalization=str(data.get("orthogonal_normalization", "raw")),
+        orthogonal_schedule=str(data.get("orthogonal_schedule", "constant")),
+        orthogonal_late_start_fraction=float(data.get("orthogonal_late_start_fraction", 0.3)),
         min_alpha=float(data.get("min_alpha", 0.2)),
         max_alpha=float(data.get("max_alpha", 2.0)),
+        saturation_threshold_fraction=float(data.get("saturation_threshold_fraction", 0.05)),
         layerwise=bool(data.get("layerwise", True)),
         parameterwise=bool(data.get("parameterwise", True)),
         eps=float(data.get("eps", 1e-8)),
@@ -163,6 +266,9 @@ def homeostatic_config_from_dict(data: dict) -> HomeostaticConfig:
         max_update_norm=float(data.get("max_update_norm", 1.0)),
         target_rms=float(data.get("target_rms", 0.02)),
         adaptation_rate=float(data.get("adaptation_rate", 0.01)),
+        early_target_rms_scale=float(data.get("early_target_rms_scale", 1.0)),
+        middle_target_rms_scale=float(data.get("middle_target_rms_scale", 1.0)),
+        late_target_rms_scale=float(data.get("late_target_rms_scale", 1.0)),
     )
     validate_homeostatic_config(config)
     return config
